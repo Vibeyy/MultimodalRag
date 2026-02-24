@@ -1,0 +1,19 @@
+"""Sample test cases for RAG evaluation."""
+
+[
+  {
+    "query": "What is artificial intelligence?",
+    "relevant_docs": ["sample.txt"],
+    "ground_truth_answer": "Artificial Intelligence (AI) is the simulation of human intelligence processes by machines, especially computer systems."
+  },
+  {
+    "query": "What are the applications of AI?",
+    "relevant_docs": ["sample.txt"],
+    "ground_truth_answer": "Common applications of AI include natural language processing, computer vision, robotics, and autonomous vehicles."
+  },
+  {
+    "query": "What is machine learning and deep learning?",
+    "relevant_docs": ["sample.txt"],
+    "ground_truth_answer": "Machine learning and deep learning are subsets of AI that focus on training algorithms to learn from data and make predictions or decisions."
+  }
+]
