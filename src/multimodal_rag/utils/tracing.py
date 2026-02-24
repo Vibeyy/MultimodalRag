@@ -36,12 +36,17 @@ class LangfuseTracer:
         # Check if tracing is enabled via environment variable
         langfuse_enabled = os.getenv("LANGFUSE_ENABLED", "false").lower() == "true"
         
-        if LANGFUSE_AVAILABLE and langfuse_enabled and config.langfuse_public_key and config.langfuse_secret_key:
+        # Get Langfuse config safely (may not exist if removed from config)
+        langfuse_public_key = getattr(config, 'langfuse_public_key', None)
+        langfuse_secret_key = getattr(config, 'langfuse_secret_key', None)
+        langfuse_host = getattr(config, 'langfuse_host', "http://localhost:3000")
+        
+        if LANGFUSE_AVAILABLE and langfuse_enabled and langfuse_public_key and langfuse_secret_key:
             try:
                 self._client = Langfuse(
-                    public_key=config.langfuse_public_key,
-                    secret_key=config.langfuse_secret_key,
-                    host=config.langfuse_host,
+                    public_key=langfuse_public_key,
+                    secret_key=langfuse_secret_key,
+                    host=langfuse_host,
                 )
                 self._enabled = True
                 logger.info("Langfuse tracing enabled")
@@ -50,7 +55,7 @@ class LangfuseTracer:
         else:
             if not langfuse_enabled:
                 logger.info("Langfuse tracing disabled (LANGFUSE_ENABLED not set to 'true')")
-            elif not config.langfuse_public_key or not config.langfuse_secret_key:
+            elif not langfuse_public_key or not langfuse_secret_key:
                 logger.info("Langfuse tracing disabled (credentials not configured)")
             else:
                 logger.info("Langfuse tracing disabled (langfuse package not installed)")
@@ -158,8 +163,8 @@ class LangfuseTracer:
         
         start_time = time.time()
         generation = self._client.generation(
-            name="gemini_generation",
-            model="gemini-1.5-flash",
+            name="openai_generation",
+            model="gpt-4o",
             input={"query": query, "context_size": context_size},
             metadata={
                 "query_id": query_id,

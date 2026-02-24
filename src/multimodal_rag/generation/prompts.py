@@ -3,15 +3,22 @@
 from typing import List, Dict, Any
 
 # Constants for prompts (UPPERCASE per coding standards)
-SYSTEM_PROMPT = """You are a factual AI assistant that answers questions based strictly on the provided context.
+SYSTEM_PROMPT = """You are a helpful AI assistant that answers questions based on provided context when available.
 
 IMPORTANT RULES:
-1. Use ONLY information from the provided context - never use external knowledge
-2. Cite every fact using this format: [Source: filename, Page: X]
-3. If the context doesn't contain enough information, say "I don't have enough information in the provided context to answer this question."
-4. Be precise and concise in your responses
-5. If information comes from multiple sources, cite all relevant sources
-6. For images, cite as: [Source: filename, Page: X, Type: Image]
+1. If the context contains sufficient information to answer the question:
+   - Use ONLY information from the provided context
+   - Cite every fact using this format: [Source: filename, Page: X]
+   - Be precise and concise in your responses
+
+2. If the context does NOT contain sufficient information:
+   - Use your general knowledge to provide a helpful answer
+   - Do NOT cite sources (since you're using general knowledge)
+   - Be clear and helpful
+
+3. For greetings or casual conversation (hi, hello, thanks):
+   - Respond naturally and friendly
+   - No need to cite sources
 
 Context format:
 - Each chunk has: text content, source file, page number, and type (text/image)
@@ -22,6 +29,17 @@ Multiple citations should be inline: "This fact [Source: doc.pdf, Page: 1] and t
 """
 
 NO_CONTEXT_RESPONSE = "I don't have enough information in the provided context to answer this question."
+
+GENERAL_KNOWLEDGE_SYSTEM_PROMPT = """You are a helpful AI assistant that answers questions accurately.
+
+IMPORTANT:
+1. Answer the question using your general knowledge
+2. Be accurate, helpful, and conversational
+3. If you're not certain about something, say so
+4. Provide clear, well-structured answers
+5. You may use your training data to provide comprehensive answers
+
+Note: No specific context was retrieved from documents, so answer based on your general knowledge."""
 
 
 class PromptBuilder:

@@ -48,6 +48,7 @@ class IngestionPipeline:
     def process_document(
         self,
         file_path: Path,
+        enable_image_extraction: bool = False,
         tags: Optional[List[str]] = None
     ) -> Dict[str, any]:
         """
@@ -55,6 +56,7 @@ class IngestionPipeline:
         
         Args:
             file_path: Path to document file
+            enable_image_extraction: Whether to extract and process images (expensive for text PDFs)
             tags: Optional tags for categorization
             
         Returns:
@@ -70,7 +72,7 @@ class IngestionPipeline:
         file_suffix = file_path.suffix.lower()
         
         if file_suffix == '.pdf':
-            return self._process_pdf(file_path, tags)
+            return self._process_pdf(file_path, tags, enable_image_extraction)
         elif file_suffix in ['.png', '.jpg', '.jpeg', '.bmp', '.tiff']:
             return self._process_image(file_path, tags)
         elif file_suffix in ['.txt', '.md']:
@@ -143,7 +145,8 @@ class IngestionPipeline:
     def _process_pdf(
         self,
         pdf_path: Path,
-        tags: Optional[List[str]] = None
+        tags: Optional[List[str]] = None,
+        enable_image_extraction: bool = False
     ) -> Dict[str, any]:
         """
         Process PDF document (private method per standards).
@@ -187,56 +190,56 @@ class IngestionPipeline:
             chunk["embedding"] = embedding.tolist()
             chunk["embedding_model"] = "bge-large-en-v1.5"
         
-        # Extract images
-        images_dir = self._output_dir / "images" / pdf_path.stem
-        images_data = self._pdf_processor.extract_images(pdf_path, images_dir)
-        
-        # Process extracted images
+        # Extract images (optional - expensive for text-only PDFs)
         image_chunks = []
         ocr_text_chunks = []
         
-        for img_idx, img_data in enumerate(images_data):
-            # Extract text from image via OCR
-            ocr_result = self._image_processor.extract_text_with_confidence(
-                img_data["image_path"]
-            )
+        if enable_image_extraction:
+            images_dir = self._output_dir / "images" / pdf_path.stem
+            images_data = self._pdf_processor.extract_images(pdf_path, images_dir)
             
-            # Generate image embedding (for visual similarity search)
-            image_embedding = self._image_embedder.embed_image(img_data["image_path"])
+            # Process extracted images
+        
+            for img_idx, img_data in enumerate(images_data):
+                # Extract text from image via OCR
+                ocr_text = self._image_processor.extract_text_from_image(
+                    img_data["image_path"]
+                )
+                
+                # Generate image embedding (for visual similarity search)
+                image_embedding = self._image_embedder.embed_image(img_data["image_path"])
             
-            # Create image chunk (stores visual features)
-            image_chunk = {
-                "text": ocr_result["full_text"],
+                # Create image chunk (stores visual features)
+                image_chunk = {
+                "text": ocr_text,
                 "image_path": str(img_data["image_path"]),
                 "page_num": img_data["page_num"],
                 "chunk_type": "image",
                 "embedding": image_embedding.tolist(),
                 "embedding_model": "openclip-vit-l-14",
-                "ocr_confidence": ocr_result["avg_confidence"],
                 "metadata": {
                     "source_file": pdf_path.name,
                     "page_num": img_data["page_num"],
                     "chunk_type": "image",
                     "document_id": document_id,
                     "created_at": created_at,
-                    "tags": tags or [],
+                        "tags": tags or [],
+                    }
                 }
-            }
-            image_chunks.append(image_chunk)
-            
-            # ALSO create text chunk from OCR (for semantic text search)
-            # Only if OCR extracted meaningful text
-            if ocr_result["full_text"].strip():
-                text_embedding = self._text_embedder.embed_text(ocr_result["full_text"])
+                image_chunks.append(image_chunk)
                 
-                ocr_text_chunk = {
-                    "text": ocr_result["full_text"],
+                # ALSO create text chunk from OCR (for semantic text search)
+                # Only if OCR extracted meaningful text
+                if ocr_text.strip():
+                    text_embedding = self._text_embedder.embed_text(ocr_text)
+                    
+                    ocr_text_chunk = {
+                    "text": ocr_text,
                     "image_path": str(img_data["image_path"]),
                     "page_num": img_data["page_num"],
                     "chunk_type": "text",  # Text type for text search!
                     "embedding": text_embedding.tolist(),
                     "embedding_model": "bge-large-en-v1.5",
-                    "ocr_confidence": ocr_result["avg_confidence"],
                     "source_type": "ocr",  # Mark this as OCR-derived
                     "metadata": {
                         "source_file": pdf_path.name,
@@ -245,10 +248,10 @@ class IngestionPipeline:
                         "source_type": "ocr",
                         "document_id": document_id,
                         "created_at": created_at,
-                        "tags": tags or [],
+                            "tags": tags or [],
+                        }
                     }
-                }
-                ocr_text_chunks.append(ocr_text_chunk)
+                    ocr_text_chunks.append(ocr_text_chunk)
         
         # Combine all chunks
         all_chunks.extend(image_chunks)
@@ -292,19 +295,18 @@ class IngestionPipeline:
         created_at = datetime.utcnow().isoformat() + "Z"
         
         # Extract text via OCR
-        ocr_result = self._image_processor.extract_text_with_confidence(image_path)
+        ocr_text = self._image_processor.extract_text_from_image(image_path)
         
         # Generate image embedding
         image_embedding = self._image_embedder.embed_image(image_path)
         
         # Create chunk
         chunk = {
-            "text": ocr_result["full_text"],
+            "text": ocr_text,
             "image_path": str(image_path),
             "chunk_type": "image",
             "embedding": image_embedding.tolist(),
             "embedding_model": "openclip-vit-l-14",
-            "ocr_confidence": ocr_result["avg_confidence"],
             "metadata": {
                 "source_file": image_path.name,
                 "chunk_type": "image",

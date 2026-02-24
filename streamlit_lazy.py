@@ -3,9 +3,14 @@
 import streamlit as st
 from pathlib import Path
 import sys
+from dotenv import load_dotenv
+from datetime import datetime
 
-# Add src to path
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+# Load environment variables from .env file
+load_dotenv()
+
+# Add src to path (correct path: MultimodalRag/src/)
+sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 # Page configuration
 st.set_page_config(
@@ -14,17 +19,110 @@ st.set_page_config(
     layout="wide",
 )
 
-st.title("Multimodal RAG Assistant")
-
 # Initialize session state
 if 'initialized' not in st.session_state:
     st.session_state.initialized = False
 if 'chat_history' not in st.session_state:
     st.session_state.chat_history = []
-if 'last_query' not in st.session_state:
-    st.session_state.last_query = ""
-if 'last_answer' not in st.session_state:
-    st.session_state.last_answer = ""
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+if 'user_id' not in st.session_state:
+    st.session_state.user_id = None
+if 'user_email' not in st.session_state:
+    st.session_state.user_email = None
+if 'current_session_id' not in st.session_state:
+    st.session_state.current_session_id = None
+if 'sessions' not in st.session_state:
+    st.session_state.sessions = []
+if 'firebase_manager' not in st.session_state:
+    # Initialize Firebase Manager once
+    from multimodal_rag.utils.firebase_auth import get_firebase_manager
+    st.session_state.firebase_manager = get_firebase_manager()
+
+# ============================================================================
+# AUTHENTICATION PAGE
+# ============================================================================
+
+if not st.session_state.authenticated:
+    st.title("Multimodal RAG Assistant")
+    st.markdown("### Login or Create Account")
+    
+    # Check if Firebase is available
+    if not st.session_state.firebase_manager.initialized:
+        st.error("⚠️ Firebase not configured. Please set up Firebase credentials in .env file.")
+        st.info("""
+        Required environment variables:
+        - FIREBASE_PROJECT_ID
+        - FIREBASE_PRIVATE_KEY
+        - FIREBASE_CLIENT_EMAIL
+        - FIREBASE_WEB_API_KEY
+        """)
+        st.stop()
+    
+    # Login form
+   
+    st.info("💡 Users must be created directly in Firebase Console")
+    
+    with st.form("login_form"):
+        login_email = st.text_input("Email", key="login_email")
+        login_password = st.text_input("Password", type="password", key="login_password")
+        login_submit = st.form_submit_button("Login", type="primary", use_container_width=True)
+        
+        if login_submit:
+            if not login_email or not login_password:
+                st.error("Please enter both email and password")
+            else:
+                with st.spinner("Logging in..."):
+                    result = st.session_state.firebase_manager.sign_in(login_email, login_password)
+                    
+                    if result['success']:
+                        st.session_state.authenticated = True
+                        st.session_state.user_id = result['user_id']
+                        st.session_state.user_email = result['email']
+                        
+                        # Load sessions from Firestore
+                        st.session_state.sessions = st.session_state.firebase_manager.get_sessions(
+                            result['user_id']
+                        )
+                        
+                        # Create first session if none exist
+                        if not st.session_state.sessions:
+                            new_session = st.session_state.firebase_manager.create_session(
+                                result['user_id'],
+                                "New Chat"
+                            )
+                            if new_session['success']:
+                                st.session_state.current_session_id = new_session['session_id']
+                                st.session_state.sessions = [{
+                                    'id': new_session['session_id'],
+                                    'title': 'New Chat',
+                                    'created_at': datetime.utcnow().isoformat(),
+                                    'updated_at': datetime.utcnow().isoformat(),
+                                    'message_count': 0
+                                }]
+                        else:
+                            # Set current session to most recent
+                            st.session_state.current_session_id = st.session_state.sessions[0]['id']
+                        
+                        # Load messages for current session
+                        st.session_state.chat_history = st.session_state.firebase_manager.get_session_messages(
+                            result['user_id'],
+                            st.session_state.current_session_id
+                        )
+                        
+                        st.success(result['message'])
+                        st.rerun()
+                    else:
+                        st.error(result['message'])
+    
+    st.stop()  # Stop rendering if not authenticated
+
+# ============================================================================
+# MAIN APPLICATION (Only shown after authentication)
+# ============================================================================
+
+st.title("Multimodal RAG Assistant")
+st.caption(f"👤 Logged in as: **{st.session_state.user_email}**")
 
 # Sidebar
 with st.sidebar:
@@ -32,171 +130,273 @@ with st.sidebar:
     expand_query = st.checkbox("Query Expansion", value=False)
     
     st.divider()
-    st.subheader("Tracing")
-    enable_langfuse = st.checkbox("Enable Langfuse", value=False, help="Track queries in Langfuse Cloud")
-    if enable_langfuse:
-        st.caption("Traces will appear in Langfuse dashboard")
-        # Set environment variable and reinitialize tracer
-        import os
-        os.environ["LANGFUSE_ENABLED"] = "true"
-        # Force tracer reinitialization
-        if st.session_state.initialized:
-            try:
-                from multimodal_rag.utils import tracing
-                tracing._tracer = None  # Reset global instance
-                tracer = tracing.get_tracer()
-                if tracer._enabled:
-                    st.caption("Connected to Langfuse")
-            except Exception as e:
-                st.error(f"Langfuse init failed: {e}")
-    else:
-        import os
-        os.environ["LANGFUSE_ENABLED"] = "false"
+    st.subheader("💬 Chat Sessions")
+    
+    # New Chat button
+    if st.button("➕ New Chat", use_container_width=True, type="primary"):
+        result = st.session_state.firebase_manager.create_session(
+            st.session_state.user_id,
+            "New Chat"
+        )
+        if result['success']:
+            st.session_state.current_session_id = result['session_id']
+            st.session_state.chat_history = []
+            # Refresh sessions list
+            st.session_state.sessions = st.session_state.firebase_manager.get_sessions(
+                st.session_state.user_id
+            )
+            st.success("New chat created!")
+            st.rerun()
+    
+    st.caption(f"💭 {len(st.session_state.sessions)} total sessions")
+    
+    # Display sessions
+    if st.session_state.sessions:
+        st.markdown("#### Recent Chats")
+        for session in st.session_state.sessions[:10]:  # Show latest 10
+            col1, col2 = st.columns([4, 1])
+            
+            with col1:
+                # Highlight active session
+                is_active = session['id'] == st.session_state.current_session_id
+                button_type = "primary" if is_active else "secondary"
+                
+                # Session button
+                title_display = session['title'][:30] + "..." if len(session['title']) > 30 else session['title']
+                if st.button(
+                    f"{'🟢' if is_active else '⚪'} {title_display}",
+                    key=f"session_{session['id']}",
+                    use_container_width=True,
+                    type=button_type
+                ):
+                    # Switch to this session
+                    st.session_state.current_session_id = session['id']
+                    st.session_state.chat_history = st.session_state.firebase_manager.get_session_messages(
+                        st.session_state.user_id,
+                        session['id']
+                    )
+                    st.rerun()
+            
+            with col2:
+                # Delete button
+                if st.button("🗑️", key=f"delete_{session['id']}", help="Delete session"):
+                    if session['id'] == st.session_state.current_session_id:
+                        # If deleting current session, switch to another
+                        other_sessions = [s for s in st.session_state.sessions if s['id'] != session['id']]
+                        if other_sessions:
+                            st.session_state.current_session_id = other_sessions[0]['id']
+                            st.session_state.chat_history = st.session_state.firebase_manager.get_session_messages(
+                                st.session_state.user_id,
+                                other_sessions[0]['id']
+                            )
+                        else:
+                            # Create new session if this was the last one
+                            new_session = st.session_state.firebase_manager.create_session(
+                                st.session_state.user_id,
+                                "New Chat"
+                            )
+                            st.session_state.current_session_id = new_session['session_id']
+                            st.session_state.chat_history = []
+                    
+                    # Delete the session
+                    st.session_state.firebase_manager.delete_session(
+                        st.session_state.user_id,
+                        session['id']
+                    )
+                    # Refresh sessions list
+                    st.session_state.sessions = st.session_state.firebase_manager.get_sessions(
+                        st.session_state.user_id
+                    )
+                    st.rerun()
     
     st.divider()
-    if st.button("Clear Chat"):
+    st.subheader("👤 Account")
+    
+    if st.button("🚪 Logout", use_container_width=True, type="secondary"):
+        # Clear all session state
+        st.session_state.authenticated = False
+        st.session_state.user_id = None
+        st.session_state.user_email = None
         st.session_state.chat_history = []
-        st.success("Chat cleared!")
+        st.session_state.sessions = []
+        st.session_state.current_session_id = None
+        st.session_state.initialized = False
+        st.success("Logged out successfully!")
+        st.rerun()
 
 # Main content
-tab1, tab2, tab3 = st.tabs(["Chat", "Ingest", "Evaluation"])
+tab1, tab2 = st.tabs(["Chat", "Ingest"])
 
 with tab1:
-    st.header("Chat with Documents")
+    st.header("💬 Chat with Documents")
     
-    # Initialize components (lazy loading with deferred imports)
+    # Initialize components automatically (lazy loading with deferred imports)
     if not st.session_state.initialized:
-        st.info("Click 'Initialize System' to load components (may take 5-10 min first time)")
-        
-        if st.button("Initialize System", type="primary"):
-            progress = st.progress(0, text="Starting initialization...")
-            status = st.empty()
-            
+        with st.spinner("🔄 Initializing system components... This may take a moment on first load."):
             try:
-                status.info("Importing modules...")
-                progress.progress(5, text="Importing modules...")
-                
                 # Import only when needed
                 from multimodal_rag.retrieval.vector_store import QdrantStore
                 from multimodal_rag.retrieval.retrievers import HybridRetriever, DenseRetriever
                 from multimodal_rag.ingestion.embedder import TextEmbedder
                 from multimodal_rag.ingestion.pipeline import IngestionPipeline
-                from multimodal_rag.generation.generator import GeminiGenerator
+                from multimodal_rag.generation.generator import OpenAIGenerator
                 from multimodal_rag.orchestration.agents import RAGAgent
                 
-                status.info("Connecting to Qdrant...")
-                progress.progress(10, text="Connecting to Qdrant...")
                 vector_store = QdrantStore()
-                
-                status.warning("Downloading embedding model (1.3GB - this may take 5-10 minutes)...")
-                progress.progress(30, text="Loading text embedder (downloading model if first run)...")
                 text_embedder = TextEmbedder()
-                
-                status.info("Setting up retrievers...")
-                progress.progress(50, text="Setting up retrievers...")
                 dense_retriever = DenseRetriever(vector_store, text_embedder)
                 hybrid_retriever = HybridRetriever(dense_retriever)
-                
-                status.info("Initializing Gemini generator...")
-                progress.progress(70, text="Initializing Gemini generator...")
-                generator = GeminiGenerator()
-                
-                status.info("Building RAG agent...")
-                progress.progress(85, text="Building RAG agent...")
+                generator = OpenAIGenerator()
                 rag_agent = RAGAgent(hybrid_retriever, generator, None)
-                
-                status.info("Setting up ingestion pipeline...")
-                progress.progress(95, text="Setting up ingestion pipeline...")
                 pipeline = IngestionPipeline()
-                
-                progress.progress(100, text="Complete!")
-                status.success("All components loaded!")
                 
                 st.session_state.vector_store = vector_store
                 st.session_state.rag_agent = rag_agent
                 st.session_state.pipeline = pipeline
                 st.session_state.initialized = True
                 
-                st.balloons()
-                st.success("System ready! You can now ask questions.")
+                st.success("✅ System initialized successfully!")
                 st.rerun()
                 
             except Exception as e:
-                status.empty()
-                progress.empty()
                 st.error(f"Failed to initialize: {e}")
                 import traceback
                 with st.expander("Show full error"):
                     st.code(traceback.format_exc())
-        st.stop()
+                st.stop()
     
     # Query interface (only shown after initialization)
-    st.success("System is ready")
+    st.success("✅ System is ready")
     
-    query = st.text_input("Ask a question:", placeholder="What do you want to know?")
+    # Display chat history first (like ChatGPT)
+    st.markdown("---")
     
-    if st.button("Submit", type="primary") and query:
-        with st.spinner("Thinking..."):
-            try:
-                result = st.session_state.rag_agent.run(
-                    query=query,
-                    expand_query=expand_query,
-                    check_hallucination=False
-                )
-                
-                # Flush Langfuse traces if enabled
-                if enable_langfuse:
-                    try:
-                        from multimodal_rag.utils.tracing import get_tracer
-                        tracer = get_tracer()
-                        tracer.flush()
-                        st.sidebar.success("Trace sent to Langfuse")
-                    except Exception as e:
-                        st.sidebar.warning(f"Langfuse flush failed: {e}")
-                
-                # Save last query/answer for evaluation tab
-                st.session_state.last_query = query
-                st.session_state.last_answer = result['answer']
-                
-                # Display answer
-                st.markdown("### Answer")
-                st.write(result['answer'])
-                
-                # Display sources
-                if result.get('citations'):
-                    st.markdown("### Sources")
-                    for i, cit in enumerate(result['citations'], 1):
-                        st.markdown(f"{i}. **{cit['source_file']}** (Page {cit['page_num']})")
-                
-                # Save to history
-                st.session_state.chat_history.append({
-                    'query': query,
-                    'answer': result['answer'],
-                    'citations': result.get('citations', [])
-                })
-                
-            except Exception as e:
-                st.error(f"Query failed: {e}")
-                import traceback
-                with st.expander("Show error"):
-                    st.code(traceback.format_exc())
+    # Show all chat messages
+    for msg in st.session_state.chat_history:
+        # User message
+        with st.chat_message("user"):
+            st.write(msg['query'])
+        
+        # Assistant message
+        with st.chat_message("assistant"):
+            # Source indicator
+            answer_source = msg.get('answer_source', 'retrieval')
+            has_citations = len(msg.get('citations', [])) > 0
+            
+            if has_citations:
+                st.caption(f"📚 From your documents ({len(msg['citations'])} sources)")
+            else:
+                st.caption("💡 General knowledge")
+            
+            st.write(msg['answer'])
+            
+            # Show citations if available
+            if msg.get('citations'):
+                with st.expander(f"📎 {len(msg['citations'])} Sources"):
+                    for i, cit in enumerate(msg['citations'], 1):
+                        st.markdown(f"{i}. **{cit['source_file']}** - Page {cit['page_num']}")
     
-    # Show history
-    if st.session_state.chat_history:
-        st.divider()
-        st.markdown("### Recent History")
-        for i, item in enumerate(reversed(st.session_state.chat_history[-3:]), 1):
-            with st.expander(f"Q: {item['query'][:60]}..."):
-                st.markdown(f"**A:** {item['answer']}")
+    # Chat input at bottom
+    query = st.chat_input("Ask a question about your documents...")
+    
+    if query:
+        # Show user message immediately
+        with st.chat_message("user"):
+            st.write(query)
+        
+        # Generate response
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                try:
+                    from multimodal_rag.utils.config import get_config
+                    config = get_config()
+                    
+                    result = st.session_state.rag_agent.run(
+                        query=query,
+                        expand_query=expand_query,
+                        check_hallucination=False,
+                        allow_general_knowledge=config.allow_general_knowledge,
+                    )
+                    
+                    # Determine actual source based on answer_source and citations
+                    answer_source = result.get('answer_source', 'retrieval')
+                    has_citations = len(result.get('citations', [])) > 0
+                    
+                    # Show source indicator
+                    if has_citations:
+                        # Has citations = definitely from documents
+                        st.caption(f"📚 From your documents ({len(result['citations'])} sources)")
+                    elif answer_source == 'general_knowledge':
+                        # Explicitly marked as general knowledge
+                        st.caption("💡 General knowledge")
+                    else:
+                        # Context provided but no citations = model used general knowledge
+                        st.caption("💡 General knowledge")
+                    
+                    # Show answer
+                    st.write(result['answer'])
+                    
+                    # Show citations if available
+                    if result.get('citations'):
+                        with st.expander(f"📎 {len(result['citations'])} Sources"):
+                            for i, cit in enumerate(result['citations'], 1):
+                                st.markdown(f"{i}. **{cit['source_file']}** - Page {cit['page_num']}")
+                    
+                    # Save last query/answer for evaluation tab
+                    # Save to history with proper source detection
+                    has_citations = len(result.get('citations', [])) > 0
+                    final_answer_source = 'retrieval' if has_citations else 'general_knowledge'
+                    
+                    message_data = {
+                        'query': query,
+                        'answer': result['answer'],
+                        'citations': result.get('citations', []),
+                        'answer_source': final_answer_source,
+                    }
+                    
+                    # Save to session state
+                    st.session_state.chat_history.append(message_data)
+                    
+                    # Save to Firestore session
+                    st.session_state.firebase_manager.save_message_to_session(
+                        st.session_state.user_id,
+                        st.session_state.current_session_id,
+                        message_data
+                    )
+                    
+                    # Force rerun to show in history
+                    st.rerun()
+                    
+                except Exception as e:
+                    st.error(f"❌ Query failed: {e}")
+                    import traceback
+                    with st.expander("Show error details"):
+                        st.code(traceback.format_exc())
 
 with tab2:
     st.header("Ingest Documents")
     
     if not st.session_state.initialized:
-        st.warning("System not initialized. Go to Chat tab and click 'Initialize System' first.")
+        st.info("⏳ System is initializing... Please wait or switch to Chat tab.")
     else:
         uploaded_file = st.file_uploader("Upload a document", type=['pdf', 'txt', 'png', 'jpg', 'jpeg'])
         tags_input = st.text_input("Tags (comma-separated)", value="uploaded")
+        
+        st.divider()
+        st.subheader("Processing Options")
+        
+        enable_image_extraction = st.checkbox(
+            "Enable Image Extraction (for PDFs with diagrams/charts)",
+            value=False,
+            help="⚠️ Expensive & slow! Only enable for PDFs with important images. Text-only PDFs should leave this OFF."
+        )
+        
+        if enable_image_extraction:
+            st.warning("⚠️ Image extraction will convert every page to an image and process with Vision API. This is slow and costs ~$0.01 per page.")
+        else:
+            st.info("ℹ️ Fast text extraction mode. Vision API only used for pages with minimal text (<100 chars).")
+        
+        st.divider()
         
         if uploaded_file and st.button("Ingest Document", type="primary"):
             with st.spinner("Processing document..."):
@@ -208,7 +408,11 @@ with tab2:
                     
                     # Process document
                     tags = [t.strip() for t in tags_input.split(",")] if tags_input else []
-                    result = st.session_state.pipeline.process_document(save_path, tags=tags)
+                    result = st.session_state.pipeline.process_document(
+                        save_path,
+                        enable_image_extraction=enable_image_extraction,
+                        tags=tags
+                    )
                     
                     # Store in vector store
                     chunks = result.get('chunks', [])
@@ -228,99 +432,6 @@ with tab2:
                     
                 except Exception as e:
                     st.error(f"Ingestion failed: {e}")
-                    import traceback
-                    with st.expander("Show error"):
-                        st.code(traceback.format_exc())
-
-with tab3:
-    st.header("Evaluation")
-    
-    if not st.session_state.initialized:
-        st.warning("System not initialized. Go to Chat tab and click 'Initialize System' first.")
-    elif not st.session_state.last_query:
-        st.info("No query found. Please run a query in the Chat tab first.")
-    else:
-        st.markdown("""
-        Evaluate RAG quality using LLM-based metrics powered by **gpt-4o-mini**.
-        
-        **3 Metrics (Self-Evaluation):**
-        - Answer Relevancy: Does the answer address the question?
-        - Faithfulness: Is the answer grounded in retrieved context?
-        - Context Precision: Do the contexts support the answer?
-        
-        **4 Metrics (With Ground Truth):**
-        - Add expected answer below to also get Context Recall
-        """)
-        
-        st.divider()
-        
-        # Display current query and answer from chat
-        st.subheader("Current Query & Answer")
-        st.write(f"**Question:** {st.session_state.last_query}")
-        st.write(f"**Answer:** {st.session_state.last_answer}")
-        
-        st.divider()
-        
-        # Optional ground truth
-        with st.expander("Add Expected Answer (Optional)"):
-            st.caption("Provide an expected answer to compare against ground truth and enable Context Recall metric.")
-            expected_answer = st.text_area("Expected Answer:", height=100)
-        
-        if st.button("Run Evaluation", type="primary"):
-            with st.spinner("Running evaluation..."):
-                try:
-                    from multimodal_rag.evaluation.evaluator import RAGEvaluator
-                    
-                    # Get the last executed result from chat
-                    result = st.session_state.rag_agent.run(
-                        query=st.session_state.last_query,
-                        expand_query=False,
-                        check_hallucination=False
-                    )
-                    
-                    # Run RAGAS evaluation
-                    evaluator = RAGEvaluator()
-                    st.info("Running RAGAS metrics (may take 30-60 seconds)...")
-                    
-                    # Format retrieved contexts
-                    contexts = [
-                        chunk.get('text', chunk.get('content', ''))
-                        for chunk in result.get('retrieved_chunks', [])
-                    ]
-                    
-                    # RAGAS expects lists
-                    metrics = evaluator.evaluate_generation(
-                        queries=[st.session_state.last_query],
-                        answers=[st.session_state.last_answer],
-                        contexts=[contexts],
-                        ground_truths=[expected_answer] if expected_answer else None
-                    )
-                    
-                    st.markdown("### RAGAS Metrics")
-                    
-                    # Show metrics
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        st.metric("Answer Relevancy", f"{metrics.get('answer_relevancy', 0):.3f}", 
-                                 help="How relevant is the answer to the question?")
-                        st.metric("Context Precision", f"{metrics.get('context_precision', 0):.3f}",
-                                 help="Do the contexts support the answer?")
-                    with col2:
-                        st.metric("Faithfulness", f"{metrics.get('faithfulness', 0):.3f}",
-                                 help="Is the answer grounded in the retrieved context?")
-                        if expected_answer and 'context_recall' in metrics:
-                            st.metric("Context Recall", f"{metrics.get('context_recall', 0):.3f}",
-                                     help="Did we retrieve all info from the ground truth?")
-                    
-                    if expected_answer:
-                        st.success("Evaluated against your expected answer (4 metrics)")
-                    else:
-                        st.info("3 metrics available. Add expected answer for Context Recall.")
-                        
-                except ImportError:
-                    st.warning("RAGAS not installed. Install with: pip install ragas datasets")
-                except Exception as e:
-                    st.warning(f"RAGAS evaluation skipped: {e}")
                     import traceback
                     with st.expander("Show error"):
                         st.code(traceback.format_exc())

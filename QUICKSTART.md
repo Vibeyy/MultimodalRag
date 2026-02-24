@@ -49,8 +49,6 @@ notepad .env
 
 **Required: Add your API keys to `.env`:**
 ```env
-# Gemini API key from https://makersuite.google.com/app/apikey
-GEMINI_API_KEY=your_actual_gemini_api_key_here
 
 # Langfuse Cloud keys from https://cloud.langfuse.com/
 LANGFUSE_PUBLIC_KEY=pk-lf-your-public-key-here

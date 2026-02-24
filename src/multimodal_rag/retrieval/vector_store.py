@@ -2,6 +2,7 @@
 
 from typing import List, Dict, Optional, Any
 from pathlib import Path
+import os
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
     Distance,
@@ -26,6 +27,7 @@ class QdrantStore:
     Qdrant vector store manager (PascalCase per coding standards).
     
     Manages document storage and retrieval using Qdrant vector database.
+    Supports both local and cloud deployments.
     """
     
     def __init__(
@@ -39,22 +41,52 @@ class QdrantStore:
         
         Args:
             collection_name: Name of the collection
-            host: Qdrant server host
-            port: Qdrant server port
+            host: Qdrant server host (for local deployment)
+            port: Qdrant server port (for local deployment)
         """
         config = get_config()
         
         self._collection_name = collection_name or config.qdrant_collection_name
-        self._host = host or config.qdrant_host
-        self._port = port or config.qdrant_port
         
-        # Initialize client
-        self._client = QdrantClient(host=self._host, port=self._port)
+        # Check for cloud configuration first
+        qdrant_url = os.getenv("QDRANT_URL")
+        qdrant_api_key = os.getenv("QDRANT_API_KEY")
         
-        logger.info(
-            f"Initialized Qdrant store: {self._host}:{self._port}, "
-            f"collection={self._collection_name}"
-        )
+        if qdrant_url and qdrant_api_key:
+            # Cloud configuration (Qdrant Cloud)
+            self._client = QdrantClient(
+                url=qdrant_url,
+                api_key=qdrant_api_key,
+                timeout=60,
+            )
+            logger.info(f"Initialized Qdrant Cloud store: {qdrant_url}")
+        else:
+            # Local configuration (Docker or local instance)
+            self._host = host or config.qdrant_host
+            self._port = port or config.qdrant_port
+            self._client = QdrantClient(host=self._host, port=self._port)
+            logger.info(f"Initialized Qdrant local store: {self._host}:{self._port}")
+        
+        # Auto-ensure collection exists on initialization
+        self._ensure_collection_exists()
+    
+    def _ensure_collection_exists(self) -> None:
+        """
+        Ensure collection exists, create if it doesn't.
+        Called automatically on initialization and before operations.
+        """
+        try:
+            collections = self._client.get_collections().collections
+            exists = any(c.name == self._collection_name for c in collections)
+            
+            if not exists:
+                logger.info(f"Collection doesn't exist, creating: {self._collection_name}")
+                self.create_collection()
+            else:
+                logger.debug(f"Collection exists: {self._collection_name}")
+        except Exception as e:
+            logger.error(f"Failed to check/create collection: {str(e)}")
+            raise
     
     def create_collection(
         self,
@@ -111,6 +143,9 @@ class QdrantStore:
         if not chunks:
             logger.warning("No chunks provided for insertion")
             return 0
+        
+        # Ensure collection exists before inserting
+        self._ensure_collection_exists()
         
         try:
             points = []
@@ -185,6 +220,9 @@ class QdrantStore:
             filters: Optional metadata filters
             vector_name: Name of vector to search ("text" or "image")
             
+        # Ensure collection exists before searching
+        self._ensure_collection_exists()
+        
         Returns:
             List of search results with scores and metadata
         """

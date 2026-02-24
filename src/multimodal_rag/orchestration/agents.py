@@ -6,7 +6,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 
 from .state import RAGState
 from ..retrieval.retrievers import HybridRetriever
-from ..generation.generator import GeminiGenerator
+from ..generation.generator import OpenAIGenerator
 from ..generation.hallucination_detector import HallucinationDetector
 from ..utils.logger import setup_logger
 from ..utils.tracing import trace_function
@@ -24,7 +24,7 @@ class RAGAgent:
     def __init__(
         self,
         retriever: HybridRetriever,
-        generator: GeminiGenerator,
+        generator: OpenAIGenerator,
         hallucination_detector: Optional[HallucinationDetector] = None,
     ):
         """
@@ -32,7 +32,7 @@ class RAGAgent:
         
         Args:
             retriever: Hybrid retriever instance
-            generator: Gemini generator instance
+            generator: OpenAI generator instance
             hallucination_detector: Optional hallucination detector
         """
         self._retriever = retriever
@@ -127,40 +127,62 @@ class RAGAgent:
         return state
     
     @trace_function(name="generation")
-    def generate_answer(self, state: RAGState) -> RAGState:
+    def generate_answer(self, state: RAGState, allow_general_knowledge: bool = True) -> RAGState:
         """
         Generate answer with citations (private method).
         
         Args:
             state: Current RAG state
+            allow_general_knowledge: Whether to use general knowledge when context is poor
             
         Returns:
             Updated state with generated answer
         """
+        from ..utils.config import get_config
+        
         try:
             query = state["query"]
             chunks = state["retrieved_chunks"]
+            scores = state.get("retrieval_scores", [])
             
             logger.info(f"Generating answer for query with {len(chunks)} chunks")
             
-            if not chunks:
-                state["generated_answer"] = "I don't have enough information to answer this question."
-                state["citations"] = []
-                state["step"] = "generation_complete"
-                return state
+            # Check if retrieved chunks are actually relevant
+            config = get_config()
+            confidence_threshold = config.retrieval_confidence_threshold
             
-            # Generate with citations
-            result = self._generator.generate_with_citations(
-                query=query,
-                context=chunks,
-            )
+            # If no chunks OR all chunks have low similarity scores, use general knowledge
+            use_general_knowledge = False
+            if allow_general_knowledge:
+                if not chunks:
+                    use_general_knowledge = True
+                    logger.info("No chunks retrieved - using general knowledge")
+                elif scores and max(scores) < confidence_threshold:
+                    use_general_knowledge = True
+                    logger.info(f"Best similarity score {max(scores):.3f} below threshold {confidence_threshold} - using general knowledge")
+            
+            # Generate answer
+            if use_general_knowledge:
+                # Use general knowledge (pass empty context)
+                result = self._generator.generate_with_citations(
+                    query=query,
+                    context=[],
+                    allow_general_knowledge=True,
+                )
+            else:
+                # Use retrieved documents
+                result = self._generator.generate_with_citations(
+                    query=query,
+                    context=chunks,
+                    allow_general_knowledge=allow_general_knowledge,
+                )
             
             state["generated_answer"] = result["answer"]
             state["citations"] = result.get("citations", [])
+            state["answer_source"] = result.get("source", "unknown")
             state["step"] = "generation_complete"
-            state["metadata"]["generation_metadata"] = result.get("metadata", {})
             
-            logger.info(f"Generated answer with {len(state['citations'])} citations")
+            logger.info(f"Generated answer with {len(state['citations'])} citations, source: {state['answer_source']}")
             
         except Exception as e:
             logger.error(f"Generation failed: {str(e)}")
@@ -218,6 +240,7 @@ class RAGAgent:
         query: str,
         expand_query: bool = True,
         check_hallucination: bool = False,
+        allow_general_knowledge: bool = True,
     ) -> Dict[str, Any]:
         """
         Run complete RAG workflow.
@@ -226,6 +249,7 @@ class RAGAgent:
             query: User query
             expand_query: Whether to expand query
             check_hallucination: Whether to check for hallucinations
+            allow_general_knowledge: Whether to use general knowledge when context is insufficient
             
         Returns:
             Final response with answer and metadata
@@ -270,7 +294,7 @@ class RAGAgent:
             state["expanded_queries"] = [query]
         
         state = self.retrieve_context(state)
-        state = self.generate_answer(state)
+        state = self.generate_answer(state, allow_general_knowledge=allow_general_knowledge)
         
         if check_hallucination:
             state = self.check_hallucination(state)
@@ -302,6 +326,7 @@ class RAGAgent:
             "retrieved_chunks": state["retrieved_chunks"],
             "hallucination_score": state["hallucination_score"],
             "is_hallucinated": state["is_hallucinated"],
+            "answer_source": state.get("answer_source", "retrieval"),
             "errors": state["errors"],
             "metadata": state["metadata"],
         }

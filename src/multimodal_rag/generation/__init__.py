@@ -1,1 +1,1 @@
-"""Generation and citation components using Gemini."""
+"""Generation and citation components using OpenAI."""

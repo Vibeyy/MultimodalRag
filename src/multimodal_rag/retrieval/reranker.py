@@ -2,12 +2,7 @@
 
 from typing import List, Dict, Any, Optional
 import time
-
-try:
-    import google.generativeai as genai
-    GENAI_AVAILABLE = True
-except ImportError:
-    GENAI_AVAILABLE = False
+from openai import OpenAI
 
 from ..utils.config import get_config
 from ..utils.logger import setup_logger
@@ -15,26 +10,20 @@ from ..utils.logger import setup_logger
 logger = setup_logger(__name__)
 
 
-class GeminiReranker:
+class OpenAIReranker:
     """
-    Gemini-based reranker for context reranking (PascalCase per standards).
+    OpenAI-based reranker for context reranking (PascalCase per standards).
     
-    Uses Gemini API to rerank retrieved chunks based on query relevance.
+    Uses OpenAI Chat API to rerank retrieved chunks based on query relevance.
     """
     
     def __init__(self):
-        """Initialize Gemini reranker."""
-        if not GENAI_AVAILABLE:
-            raise ImportError(
-                "google-generativeai not installed. "
-                "Run: pip install google-generativeai"
-            )
-        
+        """Initialize OpenAI reranker."""
         config = get_config()
-        genai.configure(api_key=config.gemini_api_key)
-        self._model = genai.GenerativeModel(config.gemini_model)
+        self._client = OpenAI(api_key=config.openai_api_key)
+        self._model = config.openai_model
         
-        logger.info("Initialized Gemini reranker")
+        logger.info(f"Initialized OpenAI reranker with model: {self._model}")
     
     def rerank_chunks(
         self,
@@ -43,7 +32,7 @@ class GeminiReranker:
         top_k: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         """
-        Rerank chunks using Gemini for relevance assessment.
+        Rerank chunks using OpenAI for relevance assessment.
         
         Args:
             query: User query
@@ -59,8 +48,7 @@ class GeminiReranker:
         k = top_k or len(chunks)
         
         try:
-            # For efficiency, we'll use a simpler approach:
-            # Score each chunk individually
+            # For efficiency, we'll score each chunk individually
             scored_chunks = []
             
             for chunk in chunks:
@@ -69,8 +57,22 @@ class GeminiReranker:
                 
                 # Get relevance score
                 try:
-                    response = self._model.generate_content(prompt)
-                    score = self._parse_score(response.text)
+                    response = self._client.chat.completions.create(
+                        model=self._model,
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": "You are a relevance scoring assistant. Rate the relevance of text passages to queries."
+                            },
+                            {
+                                "role": "user",
+                                "content": prompt
+                            }
+                        ],
+                        temperature=0.0,
+                        max_tokens=10,
+                    )
+                    score = self._parse_score(response.choices[0].message.content)
                 except Exception as e:
                     logger.warning(f"Reranking failed for chunk, using original score: {str(e)}")
                     score = chunk.get("score", 0.0)
@@ -124,7 +126,7 @@ Respond with ONLY a number between 0.0 and 1.0, nothing else."""
         Parse relevance score from response (private method per standards).
         
         Args:
-            response_text: Response from Gemini
+            response_text: Response from OpenAI
             
         Returns:
             Relevance score (0.0-1.0)
@@ -142,11 +144,15 @@ Respond with ONLY a number between 0.0 and 1.0, nothing else."""
             return 0.5
 
 
+# Alias for backward compatibility
+GeminiReranker = OpenAIReranker
+
+
 class SimpleReranker:
     """
     Simple rule-based reranker (PascalCase per standards).
     
-    Reranks based on keyword matching and position. Free alternative to Gemini reranking.
+    Reranks based on keyword matching and position. Free alternative to AI-based reranking.
     """
     
     def __init__(self):

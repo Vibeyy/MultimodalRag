@@ -1,11 +1,12 @@
-"""Image processor for OCR and preprocessing."""
+"""Image processor using OpenAI Vision API."""
 
 from typing import Dict, Optional
 from pathlib import Path
-import easyocr
-from PIL import Image, ImageEnhance
-import numpy as np
+import base64
+from openai import OpenAI
+from PIL import Image
 
+from ..utils.config import get_config
 from ..utils.logger import setup_logger
 
 logger = setup_logger(__name__)
@@ -13,32 +14,34 @@ logger = setup_logger(__name__)
 
 class ImageProcessor:
     """
-    Image processor with OCR capabilities (PascalCase per coding standards).
+    Image processor using OpenAI Vision API (PascalCase per coding standards).
     
-    Uses EasyOCR for text extraction from images.
+    Uses GPT-4 Vision for text extraction from images.
     """
     
-    def __init__(self, languages: list = None):
+    def __init__(self):
+        """Initialize image processor with OpenAI client."""
+        config = get_config()
+        self._client = OpenAI(api_key=config.openai_api_key)
+        self._model = config.openai_vision_model
+        logger.info(f"Initialized OpenAI image processor with model: {self._model}")
+    
+    def _encode_image(self, image_path: Path) -> str:
         """
-        Initialize image processor with OCR.
+        Encode image to base64 string (private method).
         
         Args:
-            languages: List of language codes for OCR (default: ['en'])
+            image_path: Path to image file
+            
+        Returns:
+            Base64 encoded image string
         """
-        self._languages = languages or ['en']
-        self._reader = None
-        logger.info(f"Initialized image processor with languages: {self._languages}")
-    
-    def _init_reader(self) -> None:
-        """Initialize EasyOCR reader (lazy loading, private method)."""
-        if self._reader is None:
-            logger.info("Loading EasyOCR model...")
-            self._reader = easyocr.Reader(self._languages, gpu=False)
-            logger.info("EasyOCR model loaded successfully")
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
     
     def extract_text_from_image(self, image_path: Path) -> str:
         """
-        Extract text from image using OCR.
+        Extract text from image using OpenAI Vision API.
         
         Args:
             image_path: Path to image file
@@ -48,23 +51,40 @@ class ImageProcessor:
             
         Raises:
             FileNotFoundError: If image file doesn't exist
-            Exception: If OCR processing fails
+            Exception: If API processing fails
         """
         if not image_path.exists():
             raise FileNotFoundError(f"Image file not found: {image_path}")
         
         try:
-            # Initialize reader if needed
-            self._init_reader()
+            # Encode image
+            base64_image = self._encode_image(image_path)
             
-            # Preprocess image
-            processed_image = self._preprocess_image(image_path)
+            # Call OpenAI Vision API
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": "Extract all text from this image. Return only the text content, maintaining the original structure and formatting as much as possible."
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=4096,
+                temperature=0.0,
+            )
             
-            # Perform OCR
-            result = self._reader.readtext(np.array(processed_image))
-            
-            # Extract text from results
-            extracted_text = " ".join([text for (_, text, _) in result])
+            extracted_text = response.choices[0].message.content
             
             logger.info(f"Extracted {len(extracted_text)} characters from {image_path.name}")
             return extracted_text
@@ -73,88 +93,87 @@ class ImageProcessor:
             logger.error(f"Failed to extract text from {image_path}: {str(e)}")
             raise
     
-    def extract_text_with_confidence(
+    def extract_text_with_description(
         self,
         image_path: Path,
-        min_confidence: float = 0.5
+        include_description: bool = True
     ) -> Dict[str, any]:
         """
-        Extract text from image with confidence scores.
+        Extract text and optional description from image.
         
         Args:
             image_path: Path to image file
-            min_confidence: Minimum confidence threshold
+            include_description: Whether to include image description
             
         Returns:
-            Dictionary with text, confidence scores, and bounding boxes
+            Dictionary with text and optional description
         """
         if not image_path.exists():
             raise FileNotFoundError(f"Image file not found: {image_path}")
         
         try:
-            # Initialize reader if needed
-            self._init_reader()
+            # Encode image
+            base64_image = self._encode_image(image_path)
             
-            # Preprocess image
-            processed_image = self._preprocess_image(image_path)
+            # Prepare prompt based on options
+            if include_description:
+                prompt = """Analyze this image and provide:
+1. All text present in the image
+2. A brief description of what the image shows (charts, diagrams, photos, etc.)
+
+Format your response as:
+TEXT: [extracted text]
+DESCRIPTION: [image description]"""
+            else:
+                prompt = "Extract all text from this image. Return only the text content."
             
-            # Perform OCR
-            results = self._reader.readtext(np.array(processed_image))
+            # Call OpenAI Vision API
+            response = self._client.chat.completions.create(
+                model=self._model,
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "text",
+                                "text": prompt
+                            },
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{base64_image}"
+                                }
+                            }
+                        ]
+                    }
+                ],
+                max_tokens=4096,
+                temperature=0.0,
+            )
             
-            # Filter by confidence
-            filtered_results = []
-            full_text_parts = []
+            content = response.choices[0].message.content
             
-            for bbox, text, confidence in results:
-                if confidence >= min_confidence:
-                    filtered_results.append({
-                        "text": text,
-                        "confidence": confidence,
-                        "bbox": bbox,
-                    })
-                    full_text_parts.append(text)
-            
-            return {
-                "full_text": " ".join(full_text_parts),
-                "results": filtered_results,
-                "avg_confidence": np.mean([r["confidence"] for r in filtered_results]) if filtered_results else 0.0,
-            }
+            # Parse response
+            if include_description:
+                parts = content.split("DESCRIPTION:")
+                text_part = parts[0].replace("TEXT:", "").strip()
+                description = parts[1].strip() if len(parts) > 1 else ""
+                
+                return {
+                    "text": text_part,
+                    "description": description,
+                    "full_content": content,
+                }
+            else:
+                return {
+                    "text": content,
+                    "description": "",
+                    "full_content": content,
+                }
             
         except Exception as e:
-            logger.error(f"Failed to extract text with confidence from {image_path}: {str(e)}")
+            logger.error(f"Failed to extract text with description from {image_path}: {str(e)}")
             raise
-    
-    def _preprocess_image(self, image_path: Path) -> Image.Image:
-        """
-        Preprocess image for better OCR accuracy (private method).
-        
-        Args:
-            image_path: Path to image file
-            
-        Returns:
-            Preprocessed PIL Image
-        """
-        try:
-            # Load image
-            image = Image.open(image_path)
-            
-            # Convert to RGB if needed
-            if image.mode != 'RGB':
-                image = image.convert('RGB')
-            
-            # Enhance contrast
-            enhancer = ImageEnhance.Contrast(image)
-            image = enhancer.enhance(1.5)
-            
-            # Enhance sharpness
-            enhancer = ImageEnhance.Sharpness(image)
-            image = enhancer.enhance(1.5)
-            
-            return image
-            
-        except Exception as e:
-            logger.warning(f"Image preprocessing failed, using original: {str(e)}")
-            return Image.open(image_path)
     
     def get_image_metadata(self, image_path: Path) -> Dict[str, any]:
         """

@@ -8,7 +8,7 @@ import shutil
 from multimodal_rag.ingestion.pipeline import IngestionPipeline
 from multimodal_rag.retrieval.vector_store import QdrantStore
 from multimodal_rag.ingestion.embedder import TextEmbedder
-from multimodal_rag.generation.generator import GeminiGenerator
+from multimodal_rag.generation.generator import OpenAIGenerator
 
 
 @pytest.fixture(scope="session")
