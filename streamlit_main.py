@@ -14,7 +14,7 @@ sys.path.insert(0, str(Path(__file__).parent / "src"))
 
 # Page configuration
 st.set_page_config(
-    page_title="Multimodal RAG Assistant",
+    page_title="DoberGirl - Multimodal RAG Assistant",
     page_icon="📄",
     layout="wide",
 )
@@ -44,7 +44,7 @@ if 'firebase_manager' not in st.session_state:
 # ============================================================================
 
 if not st.session_state.authenticated:
-    st.title("Multimodal RAG Assistant")
+    st.title("DoberGirl - Multimodal RAG Assistant")
     st.markdown("### Login or Create Account")
     
     # Check if Firebase is available
@@ -121,7 +121,7 @@ if not st.session_state.authenticated:
 # MAIN APPLICATION (Only shown after authentication)
 # ============================================================================
 
-st.title("Multimodal RAG Assistant")
+st.title("DoberGirl")
 st.caption(f"👤 Logged in as: **{st.session_state.user_email}**")
 
 # Sidebar
@@ -225,14 +225,14 @@ with st.sidebar:
         st.rerun()
 
 # Main content
-tab1, tab2 = st.tabs(["Chat", "Ingest"])
+tab1, tab2 = st.tabs(["Bark", "Eat"])
 
 with tab1:
-    st.header("💬 Chat with Documents")
+    st.header("💬 BowBow(chat) with Documents")
     
     # Initialize components automatically (lazy loading with deferred imports)
     if not st.session_state.initialized:
-        with st.spinner("🔄 Initializing system components... This may take a moment on first load."):
+        with st.spinner("Initializing system components... This may take a moment on first load."):
             try:
                 # Import only when needed
                 from multimodal_rag.retrieval.vector_store import QdrantStore
